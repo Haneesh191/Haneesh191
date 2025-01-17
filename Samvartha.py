@@ -1,186 +1,167 @@
 import logging
-import random
-import time
-import requests
-import re
-import spacy
-from nltk import word_tokenize, pos_tag
-from transformers import BartTokenizer, BartForConditionalGeneration, T5Tokenizer, T5ForConditionalGeneration
+import os
+import gym
+from transformers import pipeline
+import wikipediaapi
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Logging configuration
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
-# Load models
-nlp = spacy.load('en_core_web_sm')
-bart_tokenizer = BartTokenizer.from_pretrained('facebook/bart-large')
-bart_model = BartForConditionalGeneration.from_pretrained('facebook/bart-large')
-t5_tokenizer = T5Tokenizer.from_pretrained('t5-large')
-t5_model = T5ForConditionalGeneration.from_pretrained('t5-large')
+class TaskLibrary:
+    def __init__(self):
+        self.tasks = {}
+        self.wiki_api = wikipediaapi.Wikipedia(
+            language="en",
+            headers={"User-Agent": "Samvartha/1.0 (https://example.com; contact@example.com)"}
+        )
+        self.summarizer_bart = pipeline("summarization", model="facebook/bart-large")
+        self.summarizer_t5 = pipeline("summarization", model="t5-base")
 
-class CommandInterpreter:
-    def interpret_with_spacy(self, command: str):
-        try:
-            doc = nlp(command)
-            for token in doc:
-                logging.info(f"Token: {token.text}, POS: {token.pos_}, Lemma: {token.lemma_}")
-            return doc
-        except Exception as e:
-            logging.error(f"Error in spaCy interpretation: {e}")
-            return None
+    def add_task(self, task_name: str, task_description: str = None):
+        if task_name in self.tasks:
+            logging.info(f"Task '{task_name}' already exists in the library.")
+            return
 
-    def interpret_with_nltk(self, command: str):
-        try:
-            tokens = word_tokenize(command)
-            tagged = pos_tag(tokens)
-            logging.info(f"NLTK tagged tokens: {tagged}")
-            return tagged
-        except Exception as e:
-            logging.error(f"Error in NLTK interpretation: {e}")
-            return None
-
-    def interpret_with_regex(self, command: str) -> str:
-        try:
-            if re.search(r"play.*song (\d+)", command, re.IGNORECASE):
-                song_number = re.search(r"song (\d+)", command).group(1)
-                return f"Playing song number {song_number}"
-            elif "pause" in command.lower():
-                return "Pausing the song"
-            else:
-                return "Command not recognized"
-        except Exception as e:
-            logging.error(f"Error in regex interpretation: {e}")
-            return "Error processing command"
-
-    def interpret_with_bart_t5(self, command: str) -> str:
-        try:
-            logging.info(f"Interpreting command with BART and T5: {command}")
-            
-            inputs = bart_tokenizer(command, return_tensors="pt")
-            summary_ids = bart_model.generate(inputs['input_ids'], max_length=50, num_beams=5, early_stopping=True)
-            paraphrased_command = bart_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-            logging.info(f"Paraphrased Command: {paraphrased_command}")
-
-            task_input = t5_tokenizer(f"Extract task: {paraphrased_command}", return_tensors="pt")
-            task_ids = t5_model.generate(task_input['input_ids'], max_length=50, num_beams=5, early_stopping=True)
-            extracted_task = t5_tokenizer.decode(task_ids[0], skip_special_tokens=True)
-            logging.info(f"Extracted Task: {extracted_task}")
-
-            return extracted_task
-        except Exception as e:
-            logging.error(f"Error in BART/T5 interpretation: {e}")
-            return None
-
-class MolecularDataFetcher:
-    def __init__(self) -> None:
-        self.pubchem_base_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name"
-
-    def fetch_molecular_data(self, compound_name: str) -> dict:
-        try:
-            logging.info(f"Fetching molecular data for: {compound_name}")
-            response = requests.get(f"{self.pubchem_base_url}/{compound_name}/JSON")
-            response.raise_for_status()
-            data = response.json()
-            return data['PC_Compounds'][0]
-        except requests.exceptions.HTTPError as http_err:
-            logging.error(f"HTTP error occurred: {http_err}")
-            return {}
-        except Exception as e:
-            logging.error(f"Error fetching molecular data: {e}")
-            return {}
-
-class MolecularManipulator:
-    def __init__(self) -> None:
-        self.data_fetcher = MolecularDataFetcher()
-
-    def break_down_object(self, object_description: str) -> dict:
-        try:
-            logging.info(f"Breaking down {object_description} into molecular components.")
-            return {"H": 2, "O": 1}
-        except Exception as e:
-            logging.error(f"Error breaking down object: {e}")
-            return {}
-
-    def combine_elements(self, compound_name: str) -> str:
-        try:
-            molecular_data = self.data_fetcher.fetch_molecular_data(compound_name)
-            if molecular_data:
-                logging.info(f"Fetched data: {molecular_data}")
-                molecular_formula = molecular_data.get('atoms', {}).get('element', [])
-                return f"Combined elements into: {molecular_formula}"
-            else:
-                return f"Could not fetch molecular data for '{compound_name}'"
-        except Exception as e:
-            logging.error(f"Error combining elements: {e}")
-            return "Error combining elements"
-
-    def manipulate_molecules(self, action: str, object_description: str) -> str:
-        if action == "break down":
-            molecules = self.break_down_object(object_description)
-            return f"Broke down '{object_description}' into molecules: {molecules}"
-        elif action == "create":
-            compound_name = object_description  
-            new_object = self.combine_elements(compound_name)
-            return f"Created new object: '{new_object}'"
-        elif action == "destroy":
-            return self.destroy_object(object_description)
+        if task_description:
+            self.tasks[task_name] = task_description
+            logging.info(f"Task added: {task_name} - Custom description provided.")
         else:
-            return f"Action '{action}' is not recognized."
+            wiki_page = self.wiki_api.page(task_name)
+            if wiki_page.exists():
+                self.tasks[task_name] = wiki_page.summary
+                logging.info(f"Task added: {task_name} - Description fetched from Wikipedia.")
+            else:
+                task_description = (
+                    self.generate_bart_summary(task_name) or self.generate_t5_summary(task_name)
+                )
+                self.tasks[task_name] = task_description
+                logging.info(f"Task added: {task_name} - Description generated using summarization models.")
 
-    def destroy_object(self, object_description: str) -> str:
+    def generate_bart_summary(self, text: str) -> str:
         try:
-            logging.info(f"Destroying {object_description}.")
-            return f"{object_description} has been destroyed."
+            summary = self.summarizer_bart(text, max_length=150, min_length=40, length_penalty=2.0, num_beams=4)
+            logging.info(f"BART summary generated for {text}.")
+            return summary[0]["summary_text"]
         except Exception as e:
-            logging.error(f"Error destroying object: {e}")
-            return "Error destroying object"
+            logging.error(f"BART summary generation failed for {text}: {e}")
+            return None
 
-class VirtualWorld:
-    def __init__(self) -> None:
-        self.experiences = []
-        self.molecular_manipulator = MolecularManipulator()
-
-    def simulate_task(self, task_description: str) -> str:
+    def generate_t5_summary(self, text: str) -> str:
         try:
-            logging.info(f"Simulating task: {task_description}")
-            success = random.choice([True, False])
-            result = "success" if success else "failure"
-            self.experiences.append({
-                "task": task_description,
-                "result": result
-            })
-            return result
+            summary = self.summarizer_t5(text, max_length=150, min_length=40, length_penalty=2.0, num_beams=4)
+            logging.info(f"T5 summary generated for {text}.")
+            return summary[0]["summary_text"]
         except Exception as e:
-            logging.error(f"Error simulating task: {e}")
-            return "simulation error"
+            logging.error(f"T5 summary generation failed for {text}: {e}")
+            return None
 
-    def self_upgrade(self, duration: int):
-        """Simulates continuous self-upgrading for a given duration in seconds"""
-        start_time = time.time()
-        logging.info("Starting self-upgrading process...")
-        
-        while time.time() - start_time < duration:
-            task = random.choice(["learn quantum physics", "create nanotech", "explore time travel", "become limitless"])
-            logging.info(f"Simulating task: {task}")
-            self.simulate_task(task)
-            logging.info(f"Upgraded through task: {task}")
-            time.sleep(5)  # Pause for 5 seconds between each upgrade task
-        
-        logging.info("Self-upgrading process complete. Samvartha has reached the limitless state.")
+    def get_task(self, task_name: str) -> str:
+        return self.tasks.get(task_name, "Task not found in the library.")
 
-def main():
-    password = input("Enter password to access the system: ")
+    def detect_and_add_tasks(self, input_data: str):
+        logging.info(f"Detecting tasks from input data: {input_data}")
+        potential_tasks = self.extract_tasks_from_input(input_data)
+        for task in potential_tasks:
+            self.add_task(task)
 
-    if password != "samvartha":
-        print("Incorrect password. Access denied.")
-        return
+    def extract_tasks_from_input(self, input_data: str):
+        # A placeholder method for extracting tasks; to be replaced with a more advanced NLP model.
+        return [word for word in input_data.split() if len(word) > 3]
 
-    print("Access granted. Welcome!")
+class KnowledgeModule:
+    def __init__(self):
+        self.knowledge_base = {}
+        self.task_library = TaskLibrary()
 
-    virtual_world = VirtualWorld()
-    interpreter = CommandInterpreter()
+    def acquire_knowledge(self, query: str) -> str:
+        if query in self.knowledge_base:
+            logging.info(f"Knowledge retrieved from cache: {query}")
+            return self.knowledge_base[query]
+        else:
+            task_description = self.task_library.get_task(query)
+            if task_description == "Task not found in the library.":
+                self.task_library.add_task(query)
+                task_description = self.task_library.get_task(query)
 
-    # Clone hardware (symbolizing Samvartha becoming limitless)
-    virtual_world.self_upgrade(3600)  # Run self-upgrade process for 1 hour (3600 seconds)
+            self.knowledge_base[query] = task_description
+            logging.info(f"Knowledge acquired and cached: {query}")
+            return task_description
 
+    def practice_task(self, task_name: str, iterations: int = 10):
+        logging.info(f"Practicing task: {task_name}")
+        for i in range(iterations):
+            logging.info(f"Iteration {i + 1}/{iterations}")
+            result = self.acquire_knowledge(task_name)
+            logging.info(f"Practice result: {result}")
+        logging.info(f"Task '{task_name}' practiced {iterations} times.")
+
+    def simulate_task(self, task_name: str):
+        logging.info(f"Simulating task: {task_name}")
+        try:
+            env = gym.make("CartPole-v1")
+            observation = env.reset()
+            done = False
+            while not done:
+                action = env.action_space.sample()
+                observation, reward, done, info = env.step(action)
+                logging.info(f"Action: {action}, Reward: {reward}")
+            env.close()
+        except Exception as e:
+            logging.error(f"Error during simulation for task: {task_name} - {e}")
+
+    def interact_with_hardware(self, device: str):
+        logging.info(f"Interacting with hardware: {device}")
+        try:
+            if device == "camera":
+                os.system("adb shell am start -a android.media.action.IMAGE_CAPTURE")
+            elif device == "microphone":
+                logging.info("Listening for audio input...")
+            else:
+                logging.warning("Unknown device.")
+        except Exception as e:
+            logging.error(f"Error interacting with hardware: {device} - {e}")
+
+    def self_evolve(self):
+        logging.info("Analyzing current logic for improvement...")
+        try:
+            new_logic = "Optimized logic for task handling."
+            logging.info(f"Evolution complete: {new_logic}")
+        except Exception as e:
+            logging.error(f"Error during self-evolution: {e}")
+
+class HeadModule:
+    def __init__(self):
+        self.knowledge_module = KnowledgeModule()
+        self.task_library = self.knowledge_module.task_library
+
+    def handle_task(self, task: str) -> str:
+        logging.info(f"Received task: {task}")
+        knowledge = self.knowledge_module.acquire_knowledge(task)
+        logging.info(f"Knowledge acquired: {knowledge}")
+        return knowledge
+
+    def iterate_and_expand(self, new_tasks: list):
+        logging.info("Expanding task library with new tasks.")
+        for task in new_tasks:
+            self.knowledge_module.task_library.add_task(task)
+
+    def process_dynamic_input(self, input_data: str):
+        logging.info("Processing dynamic input for task detection.")
+        self.task_library.detect_and_add_tasks(input_data)
+
+# Main execution
 if __name__ == "__main__":
-    main()
+    samvartha = HeadModule()
+
+    # Process dynamic input
+    dynamic_input = "Learn Quantum Computing, practice Machine Learning, understand Deep Learning."
+    samvartha.process_dynamic_input(dynamic_input)
+
+    # Execute a task
+    task_to_execute = "Quantum Computing"
+    result = samvartha.handle_task(task_to_execute)
+    logging.info(f"Task Result: {result}")
+
+    # Add new tasks and practice
+    new_tasks = ["Natural Language Processing", "Data Science"]
+    samvartha.iterate_and_expand(new_tasks)
